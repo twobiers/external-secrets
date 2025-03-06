@@ -16,6 +16,7 @@ package onepassword
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -30,12 +31,13 @@ import (
 	esv1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
 	esmeta "github.com/external-secrets/external-secrets/apis/meta/v1"
 	"github.com/external-secrets/external-secrets/pkg/provider/onepassword/fake"
+	"github.com/external-secrets/external-secrets/pkg/utils/metadata"
 )
 
 const (
 	// vaults and items.
-	myVault, myVaultID                       = "my-vault", "my-vault-id"
-	myItem, myItemID                         = "my-item", "my-item-id"
+	myVault, myVaultID, myVaultUUID          = "my-vault", "my-vault-id", "39c31136-d086-47e9-a52c-8fe330d2669a"
+	myItem, myItemID, myItemUUID             = "my-item", "my-item-id", "687adbe7-e6d2-4059-9a62-dbb95d291143"
 	mySharedVault, mySharedVaultID           = "my-shared-vault", "my-shared-vault-id"
 	mySharedItem, mySharedItemID             = "my-shared-item", "my-shared-item-id"
 	myOtherVault, myOtherVaultID             = "my-other-vault", "my-other-vault-id"
@@ -105,6 +107,33 @@ func TestFindItem(t *testing.T) {
 						ID:    myItemID,
 						Title: myItem,
 						Vault: onepassword.ItemVault{ID: myVaultID},
+						Fields: []*onepassword.ItemField{
+							{
+								Label: key1,
+								Value: value1,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			setupNote: "uuid: valid basic: one vault, one item, one field",
+			provider: &ProviderOnePassword{
+				vaults: map[string]int{myVaultUUID: 1},
+				client: fake.NewMockClient().
+					AddPredictableVaultUUID(myVaultUUID).
+					AddPredictableItemWithFieldUUID(myVaultUUID, myItemUUID, key1, value1),
+			},
+			checks: []check{
+				{
+					checkNote:    "pass",
+					findItemName: myItemUUID,
+					expectedErr:  nil,
+					expectedItem: &onepassword.Item{
+						ID:    myItemUUID,
+						Title: myItemUUID,
+						Vault: onepassword.ItemVault{ID: myVaultUUID},
 						Fields: []*onepassword.ItemField{
 							{
 								Label: key1,
@@ -326,29 +355,31 @@ func TestFindItem(t *testing.T) {
 	}
 
 	// run the tests
-	for _, tc := range testCases {
-		for _, check := range tc.checks {
-			got, err := tc.provider.findItem(check.findItemName)
-			notes := fmt.Sprintf(setupCheckFormat, tc.setupNote, check.checkNote)
-			if check.expectedErr == nil && err != nil {
-				// expected no error, got one
-				t.Errorf(findItemErrFormat, notes, nil, err)
-			}
-			if check.expectedErr != nil && err == nil {
-				// expected an error, didn't get one
-				t.Errorf(findItemErrFormat, notes, check.expectedErr.Error(), nil)
-			}
-			if check.expectedErr != nil && err != nil && err.Error() != check.expectedErr.Error() {
-				// expected an error, got the wrong one
-				t.Errorf(findItemErrFormat, notes, check.expectedErr.Error(), err.Error())
-			}
-			if check.expectedItem != nil {
-				if !reflect.DeepEqual(check.expectedItem, got) {
-					// expected a predefined item, got something else
-					t.Errorf(findItemErrFormat, notes, check.expectedItem, got)
+	for num, tc := range testCases {
+		t.Run(fmt.Sprintf("test-%d", num), func(t *testing.T) {
+			for _, check := range tc.checks {
+				got, err := tc.provider.findItem(check.findItemName)
+				notes := fmt.Sprintf(setupCheckFormat, tc.setupNote, check.checkNote)
+				if check.expectedErr == nil && err != nil {
+					// expected no error, got one
+					t.Errorf(findItemErrFormat, notes, nil, err)
+				}
+				if check.expectedErr != nil && err == nil {
+					// expected an error, didn't get one
+					t.Errorf(findItemErrFormat, notes, check.expectedErr.Error(), nil)
+				}
+				if check.expectedErr != nil && err != nil && err.Error() != check.expectedErr.Error() {
+					// expected an error, got the wrong one
+					t.Errorf(findItemErrFormat, notes, check.expectedErr.Error(), err.Error())
+				}
+				if check.expectedItem != nil {
+					if !reflect.DeepEqual(check.expectedItem, got) {
+						// expected a predefined item, got something else
+						t.Errorf(findItemErrFormat, notes, check.expectedItem, got)
+					}
 				}
 			}
-		}
+		})
 	}
 }
 
@@ -1119,7 +1150,6 @@ func TestGetAllSecrets(t *testing.T) {
 		provider  *ProviderOnePassword
 		checks    []check
 	}
-
 	testCases := []testCase{
 		{
 			setupNote: "three vaults, three items, all different field Labels",
@@ -1207,17 +1237,79 @@ func TestGetAllSecrets(t *testing.T) {
 					expectedMap: map[string][]byte{},
 					expectedErr: nil,
 				},
+			},
+		},
+		{
+			setupNote: "one vault, three items, find by tags",
+			provider: &ProviderOnePassword{
+				vaults: map[string]int{myVault: 1},
+				client: fake.NewMockClient().
+					AddPredictableVault(myVault).
+					AppendItem(myVaultID, onepassword.Item{
+						ID:    myItemID,
+						Title: myItem,
+						Tags:  []string{"foo", "bar"},
+						Vault: onepassword.ItemVault{ID: myVaultID},
+					}).
+					AppendItemField(myVaultID, myItemID, onepassword.ItemField{
+						Label: key1,
+						Value: value1,
+					}).
+					AppendItemField(myVaultID, myItemID, onepassword.ItemField{
+						Label: key2,
+						Value: value2,
+					}).
+					AppendItem(myVaultID, onepassword.Item{
+						ID:    "my-item-id-2",
+						Title: "my-item-2",
+						Vault: onepassword.ItemVault{ID: myVaultID},
+						Tags:  []string{"foo", "baz"},
+					}).
+					AppendItemField(myVaultID, "my-item-id-2", onepassword.ItemField{
+						Label: key3,
+						Value: value3,
+					}).
+					AppendItem(myVaultID, onepassword.Item{
+						ID:    "my-item-id-3",
+						Title: "my-item-3",
+						Vault: onepassword.ItemVault{ID: myVaultID},
+						Tags:  []string{"bang", "bing"},
+					}).
+					AppendItemField(myVaultID, "my-item-id-3", onepassword.ItemField{
+						Label: key4,
+						Value: value4,
+					}),
+			},
+			checks: []check{
 				{
-					checkNote: "error when find.tags",
+					checkNote: "find with tags",
 					ref: esv1beta1.ExternalSecretFind{
-						Name: &esv1beta1.FindName{
-							RegExp: "key*",
-						},
+						Path: pointer.To(myItem),
 						Tags: map[string]string{
-							"asdf": "fdas",
+							"foo": "true",
+							"bar": "true",
 						},
 					},
-					expectedErr: errors.New(errTagsNotImplemented),
+					expectedMap: map[string][]byte{
+						key1: []byte(value1),
+						key2: []byte(value2),
+					},
+					expectedErr: nil,
+				},
+				{
+					checkNote: "find with tags and get all",
+					ref: esv1beta1.ExternalSecretFind{
+						Path: pointer.To(myItem),
+						Tags: map[string]string{
+							"foo": "true",
+						},
+					},
+					expectedMap: map[string][]byte{
+						key1: []byte(value1),
+						key2: []byte(value2),
+						key3: []byte(value3),
+					},
+					expectedErr: nil,
 				},
 			},
 		},
@@ -1539,6 +1631,7 @@ type fakeRef struct {
 	key       string
 	prop      string
 	secretKey string
+	metadata  *apiextensionsv1.JSON
 }
 
 func (f fakeRef) GetRemoteKey() string {
@@ -1554,7 +1647,7 @@ func (f fakeRef) GetSecretKey() string {
 }
 
 func (f fakeRef) GetMetadata() *apiextensionsv1.JSON {
-	return nil
+	return f.metadata
 }
 
 func validateItem(t *testing.T, expectedItem, actualItem *onepassword.Item) {
@@ -1574,8 +1667,19 @@ func TestProviderOnePasswordCreateItem(t *testing.T) {
 		ref                esv1beta1.PushSecretData
 	}
 	const vaultName = "vault1"
+	const fallbackVaultName = "vault2"
 
 	thridPartyErr := errors.New("third party error")
+
+	metadata := &metadata.PushSecretMetadata[PushSecretMetadataSpec]{
+		APIVersion: metadata.APIVersion,
+		Kind:       metadata.Kind,
+		Spec: PushSecretMetadataSpec{
+			Tags:  []string{"tag1", "tag2"},
+			Vault: fallbackVaultName,
+		},
+	}
+	metadataRaw, _ := json.Marshal(metadata)
 
 	testCases := []testCase{
 		{
@@ -1587,7 +1691,8 @@ func TestProviderOnePasswordCreateItem(t *testing.T) {
 			},
 			expectedErr: nil,
 			vaults: map[string]int{
-				vaultName: 1,
+				vaultName:         1,
+				fallbackVaultName: 2,
 			},
 			createValidateFunc: func(t *testing.T, item *onepassword.Item, s string) (*onepassword.Item, error) {
 				validateItem(t, &onepassword.Item{
@@ -1664,6 +1769,36 @@ func TestProviderOnePasswordCreateItem(t *testing.T) {
 					},
 				}, item)
 				return nil, thridPartyErr
+			},
+		},
+		{
+			setupNote: "valid metadata overrides",
+			val:       []byte("testing"),
+			ref: fakeRef{
+				key:  "another",
+				prop: "property",
+				metadata: &apiextensionsv1.JSON{
+					Raw: metadataRaw,
+				},
+			},
+			vaults: map[string]int{
+				vaultName:         1,
+				fallbackVaultName: 2,
+			},
+			expectedErr: nil,
+			createValidateFunc: func(t *testing.T, item *onepassword.Item, s string) (*onepassword.Item, error) {
+				validateItem(t, &onepassword.Item{
+					Title:    "another",
+					Category: onepassword.Server,
+					Vault: onepassword.ItemVault{
+						ID: fallbackVaultName,
+					},
+					Fields: []*onepassword.ItemField{
+						generateNewItemField("property", "testing"),
+					},
+					Tags: []string{"tag1", "tag2"},
+				}, item)
+				return item, nil
 			},
 		},
 	}
@@ -2050,6 +2185,16 @@ func TestProviderOnePasswordPushSecret(t *testing.T) {
 			ID: vaultName,
 		}
 	)
+
+	metadata := &metadata.PushSecretMetadata[PushSecretMetadataSpec]{
+		APIVersion: metadata.APIVersion,
+		Kind:       metadata.Kind,
+		Spec: PushSecretMetadataSpec{
+			Tags: []string{"tag1", "tag2"},
+		},
+	}
+	metadataRaw, _ := json.Marshal(metadata)
+
 	testCases := []testCase{
 		{
 			vaults: map[string]int{
@@ -2196,6 +2341,38 @@ func TestProviderOnePasswordPushSecret(t *testing.T) {
 					ID:    key1,
 					Title: key1,
 				},
+			},
+		},
+		{
+			setupNote:   "create item with metadata overwrites success",
+			expectedErr: nil,
+			val: &corev1.Secret{Data: map[string][]byte{
+				key1: []byte("testing"),
+			}},
+			ref: fakeRef{
+				key:       key1,
+				prop:      "prop",
+				secretKey: key1,
+				metadata: &apiextensionsv1.JSON{
+					Raw: metadataRaw,
+				},
+			},
+			vaults: map[string]int{
+				vaultName: 1,
+			},
+			createValidateFunc: func(item *onepassword.Item, s string) (*onepassword.Item, error) {
+				validateItem(t, &onepassword.Item{
+					Title:    key1,
+					Category: onepassword.Server,
+					Vault: onepassword.ItemVault{
+						ID: vaultName,
+					},
+					Fields: []*onepassword.ItemField{
+						generateNewItemField("prop", "testing"),
+					},
+					Tags: []string{"tag1", "tag2"},
+				}, item)
+				return item, nil
 			},
 		},
 	}
